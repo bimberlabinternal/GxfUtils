@@ -10,12 +10,6 @@ ncbi_to_ens_mapping=sys.argv[4]
 outputBase=sys.argv[5]
 outDir=sys.argv[6] or './'
 
-#ncbi_gtf='NCBI.Mmul_10.103.chr19.gtf'
-#ensembl_gtf='Ensembl.Mmul_10.99.chr19.gtf'
-#ncbi_to_ens_mapping='gene2ensembl.mmul.txt'
-#gene_intersect_bedtools = 'GeneIntersectBedtools.txt'
-
-
 if outDir != './' and not os.path.exists(outDir):
 	os.makedirs(outDir)
 
@@ -174,6 +168,7 @@ def transformEns(d):
 	return d
 
 #Note: NCBI must be imported first, to build ID->Name map
+print('Parsing NCBI GTF: ' + ncbi_gtf)
 ncbi = gffutils.create_db(ncbi_gtf, ":memory:", 
 	id_spec={'transcript': 'transcript_id', 'gene': 'gene_id', 'Name': 'gene_name'}, 
 	gtf_transcript_key='transcript_id', 
@@ -183,7 +178,9 @@ ncbi = gffutils.create_db(ncbi_gtf, ":memory:",
 	disable_infer_transcripts=True,
 	disable_infer_genes=True
 )
+print('Done')
 
+print('Parsing Ensembl GTF: ' + ensembl_gtf)
 ensdb = gffutils.create_db(ensembl_gtf, ":memory:",
 	id_spec={'transcript': 'transcript_id', 'gene': 'gene_id', 'Name': 'gene_name'},
 	gtf_transcript_key='transcript_id',
@@ -193,6 +190,7 @@ ensdb = gffutils.create_db(ensembl_gtf, ":memory:",
 	disable_infer_transcripts=True,
 	disable_infer_genes=True
 )
+print('Done')
 
 #with open('ncbi.annotated.gtf', 'w') as fout:
 #	for f in ncbi.all_features():

@@ -27,7 +27,7 @@ if [ ! -e $NCBI_TRANSLATED ];then
 fi
 
 if [ ! -e $NCBI19 ];then
-	zcat $NCBI_TRANSLATED | awk ' $1 == "19" ' > $NCBI19
+	cat $NCBI_TRANSLATED | awk ' $1 == "19" ' > $NCBI19
 fi
 
 ENSEMBL=Ensembl.Mmul_10.100.gtf.gz
@@ -36,16 +36,16 @@ ENSEMBL19=Ensembl.Mmul_10.100.chr19.gtf
 # https://www.ncbi.nlm.nih.gov/genome/annotation_euk/Macaca_mulatta/103/
 # Version 103
 # 21,748 coding, 64,191 transcripts
-if [ ! -e $ENSEMBL ];then
-	wget -O $ENSEMBL ftp://ftp.ensembl.org/pub/release-100/gtf/macaca_mulatta/Macaca_mulatta.Mmul_10.100.gtf.gz
-fi
+if [ ! -e $ENSEMBL_UNZIP ];then
+	if [ ! -e $ENSEMBL ];then
+		wget -O $ENSEMBL ftp://ftp.ensembl.org/pub/release-100/gtf/macaca_mulatta/Macaca_mulatta.Mmul_10.100.gtf.gz
+	fi
 
-if ! -e $ENSEMBL_UNZIP ];then
 	gunzip $ENSEMBL_UNZIP
 fi
 
 if [ ! -e $ENSEMBL19 ];then
-	zcat $ENSEMBL | awk ' $1 == "19" ' > $ENSEMBL19
+	cat $ENSEMBL_UNZIP | awk ' $1 == "19" ' > $ENSEMBL19
 fi
 
 #See: https://ftp.ncbi.nlm.nih.gov/gene/DATA/
