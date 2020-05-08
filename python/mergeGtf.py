@@ -409,7 +409,7 @@ with open(mergedGtfOut, 'w') as gtfOut, open(mergedGffOut, 'w') as gffOut:
 				
 			gtfOut.write(str(c) + '\n')
 			i += 1
-			if i % 2500 == 0:
+			if i % 10000 == 0:
 				print(str(i) + ' lines written')
 			
 			c.dialect = {
@@ -437,9 +437,11 @@ with open(outDir + 'Summary.txt', 'w') as output:
 		else:
 			output.write(key + '\t' + str(results[key]) + '\n')
 
+del ncbi
 if not gtfInMemory and os.path.exists(ncbiDbFile):
 	os.remove(ncbiDbFile)
-	
+
+del ensdb
 if not gtfInMemory and os.path.exists(ensDbFile):
 	os.remove(ensDbFile)
 	
