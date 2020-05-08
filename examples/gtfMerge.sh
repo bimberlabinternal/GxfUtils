@@ -69,8 +69,8 @@ limitToType(){
 
 #First find reciprocal intersects for genes:
 NCBI_GENES=$(limitToType 'gene' $NCBI_TRANSLATED)
-ENSEMBL_GENES=$(limitToType 'gene' $$ENSEMBL_UNZIP)
+ENSEMBL_GENES=$(limitToType 'gene' $ENSEMBL_UNZIP)
 INTERSECT=GeneIntersectBedtools.txt
-$BEDTOOLS intersect -f .9 -r -s -sorted -a $NCBI_GENES -b $ENSEMBL_GENES -wa -wb > $INTERSECT
+$BEDTOOLS intersect -f .9 -r -s -a $NCBI_GENES -b $ENSEMBL_GENES -wa -wb > $INTERSECT
 
 python3 mergeGtf.py $NCBI_TRANSLATED $ENSEMBL_UNZIP $INTERSECT $GENE2ENSEMBL_MM Ensembl.v100.NCBI.v103 ./output/

@@ -10,6 +10,8 @@ ncbi_to_ens_mapping=sys.argv[4]
 outputBase=sys.argv[5]
 outDir=sys.argv[6] or './'
 
+gtfInMemory = False
+
 if outDir != './' and not os.path.exists(outDir):
 	os.makedirs(outDir)
 
@@ -169,7 +171,11 @@ def transformEns(d):
 
 #Note: NCBI must be imported first, to build ID->Name map
 print('Parsing NCBI GTF: ' + ncbi_gtf)
-ncbi = gffutils.create_db(ncbi_gtf, ":memory:", 
+ncbiDbFile = outDir + 'ncbiDB'
+if not gtfInMemory and os.path.exists(ncbiDbFile):
+	os.remove(ncbiDbFile)
+	
+ncbi = gffutils.create_db(ncbi_gtf, (":memory:" if gtfInMemory else ncbiDbFile), 
 	id_spec={'transcript': 'transcript_id', 'gene': 'gene_id', 'Name': 'gene_name'}, 
 	gtf_transcript_key='transcript_id', 
 	gtf_gene_key='gene_id', 
@@ -181,7 +187,11 @@ ncbi = gffutils.create_db(ncbi_gtf, ":memory:",
 print('Done')
 
 print('Parsing Ensembl GTF: ' + ensembl_gtf)
-ensdb = gffutils.create_db(ensembl_gtf, ":memory:",
+ensDbFile = outDir + 'ensDB'
+if not gtfInMemory and os.path.exists(ensDbFile):
+	os.remove(outDir + 'ensDB')
+	
+ensdb = gffutils.create_db(ensembl_gtf, (":memory:" if gtfInMemory else ensDbFile),
 	id_spec={'transcript': 'transcript_id', 'gene': 'gene_id', 'Name': 'gene_name'},
 	gtf_transcript_key='transcript_id',
 	gtf_gene_key='gene_id',
@@ -226,14 +236,21 @@ def sortByOrder(record):
 	return int(record.attributes['sort_order'][0])
 	
 #Iterate existing Ensembl genes.  If a gene is mapped to NCBI, iterate transcripts on both sides and merge.
+print('Comparing/merging transcripts')
 transcriptsToAdd = []
 transcriptNamesToAdd = set()
 transcriptsMappingUsingNcbi = 0
 transcriptWithIdenticalExons = 0
+
+i = 0
 with open(outDir + 'EnsemblGenesMergedWithNcbi.txt', 'w') as mergeOut:
 	mergeOut.write('\t'.join(['EnsGeneId', 'EnsGeneName', 'NCBI_GeneId', 'TotalEnsTranscripts', 'TotalNCBITranscript', 'TotalMerged', 'MergedNames']) + '\n')
-	
+		
 	for records in ensdb.iter_by_parent_childs(featuretype='gene'):
+		i += 1
+		if i % 10000 == 0:
+			print('processed: ' + str(i) + ' records')
+
 		parent = records[0]
 		children = records[1:]
 		
@@ -319,10 +336,12 @@ ensdb.update(transcriptsToAdd,
 	gtf_gene_key='gene_id', 
 	disable_infer_transcripts = True, 
 	disable_infer_genes = True, 
-	verbose=False
+	verbose=False,
+	make_backup=False
 )
 
 print('Total NCBI transcripts added to an existing Ensembl gene: '  + str(len(transcriptNamesToAdd)))
+results['NCBITranscriptsAddedToEnsemblGene'] = len(transcriptNamesToAdd)
 
 # These genes from NCBI have no mate in Ensembl, and no overlapping gene.  Add them outright:
 print('Adding ' + str(len(results['TotalNCBINotMappedToEns'])) + ' new genes that lack mapped or overlapping feature')
@@ -345,13 +364,15 @@ ensdb.update(toAdd,
 	gtf_gene_key='gene_id', 
 	disable_infer_transcripts = True, 
 	disable_infer_genes = True, 
-	verbose=False
+	verbose=False,
+	make_backup=False
 )
 
 def sortFeatureGroup(feats):
 	return ( feats[0].seqid, feats[0].start, feats[0].strand )
 
-geneMismatch = []
+print('Writing final GTF/GFFs')
+geneNameMismatch = []
 with open(mergedGtfOut, 'w') as gtfOut, open(mergedGffOut, 'w') as gffOut:
 	gtfOut.write('##gtf-version 2\n')
 	gtfOut.write('#Ensembl Input: ' + ensembl_gtf + '\n')
@@ -379,11 +400,11 @@ with open(mergedGtfOut, 'w') as gtfOut, open(mergedGffOut, 'w') as gffOut:
 				del c.attributes['db_xref']
 
 			if 'ncbi_genename' in c.attributes.keys() and 'gene_name' in c.attributes.keys() and c.attributes['ncbi_genename'][0] != c.attributes['gene_name'][0]:
-				geneMismatch.append([c.attributes['gene_id'][0], c.attributes['gene_name'][0], c.attributes['ncbi_genename'][0]])
+				geneNameMismatch.append([c.attributes['gene_id'][0], c.attributes['gene_name'][0], c.attributes['ncbi_genename'][0]])
 			
 			if 'ncbi_genename' in c.attributes.keys() and 'gene_name' not in c.attributes.keys():
 				c.attributes['gene_name'] = c.attributes['ncbi_geneid']
-				geneMismatch.append([c.attributes['gene_id'][0], 'MISSING', c.attributes['ncbi_genename'][0]])
+				geneNameMismatch.append([c.attributes['gene_id'][0], 'MISSING', c.attributes['ncbi_genename'][0]])
 				
 			gtfOut.write(str(c) + '\n')
 			
@@ -402,7 +423,20 @@ with open(mergedGtfOut, 'w') as gtfOut, open(mergedGffOut, 'w') as gffOut:
 
 with open(outDir + 'GeneNameMismatch.txt', 'w') as fout:
 	fout.write('Ensembl_GeneName' + '\t' + 'NCBI_GeneName' + '\n')
-	for l in geneMismatch:
+	for l in geneNameMismatch:
 		fout.write('\t'.join(l) + '\n')
-		
+
+with open(outDir + 'Summary.txt', 'w') as output:
+	for key in results.keys():
+		if hasattr(results[key], '__len__'):
+			output.write(key + '\t' + str(len(results[key])) + '\n')
+		else:
+			output.write(key + '\t' + str(results[key]) + '\n')
+
+if not gtfInMemory and os.path.exists(ncbiDbFile):
+	os.remove(ncbiDbFile)
+	
+if not gtfInMemory and os.path.exists(ensDbFile):
+	os.remove(ensDbFile)
+	
 print('Done')
