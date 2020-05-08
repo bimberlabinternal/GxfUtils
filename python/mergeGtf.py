@@ -243,12 +243,12 @@ transcriptsMappingUsingNcbi = 0
 transcriptWithIdenticalExons = 0
 
 i = 0
-with open(outDir + 'EnsemblGenesMergedWithNcbi.txt', 'w') as mergeOut:
+with open(outDir + 'NCBITranscriptsMergedToEnsemblGenes.txt', 'w') as mergeOut:
 	mergeOut.write('\t'.join(['EnsGeneId', 'EnsGeneName', 'NCBI_GeneId', 'TotalEnsTranscripts', 'TotalNCBITranscript', 'TotalMerged', 'MergedNames']) + '\n')
 		
 	for records in ensdb.iter_by_parent_childs(featuretype='gene'):
 		i += 1
-		if i % 10000 == 0:
+		if i % 2500 == 0:
 			print('processed: ' + str(i) + ' records')
 
 		parent = records[0]
@@ -352,7 +352,7 @@ for geneId in results['TotalNCBINotMappedToEns']:
 	for c in children:
 		toAdd.append(c)
 
-with open(outDir + 'FeaturesToAdd.gtf', 'w') as fout:
+with open(outDir + 'FeaturesAdded.gtf', 'w') as fout:
 	for f in toAdd:
 		fout.write(str(f) + '\n')
 	for f in transcriptsToAdd:
@@ -382,6 +382,7 @@ with open(mergedGtfOut, 'w') as gtfOut, open(mergedGffOut, 'w') as gffOut:
 	gffOut.write('#Ensembl Input: ' + ensembl_gtf + '\n')
 	gffOut.write('#NCBI Input: ' + ncbi_gtf + '\n')
 
+	i = 0
 	for feats in sorted(ensdb.iter_by_parent_childs(featuretype='gene', order_by = ( 'seqid', 'start', 'strand')), key = sortFeatureGroup):
 		parent = feats[0]
 		children = feats[1:]
@@ -407,6 +408,9 @@ with open(mergedGtfOut, 'w') as gtfOut, open(mergedGffOut, 'w') as gffOut:
 				geneNameMismatch.append([c.attributes['gene_id'][0], 'MISSING', c.attributes['ncbi_genename'][0]])
 				
 			gtfOut.write(str(c) + '\n')
+			i += 1
+			if i % 2500 == 0:
+				print(str(i) + ' lines written')
 			
 			c.dialect = {
 				'field separator': ';',
