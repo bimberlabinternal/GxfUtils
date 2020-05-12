@@ -368,9 +368,15 @@ ensdb.update(toAdd,
 	make_backup=False
 )
 
+#NOTE: need to add missing features of type mRNA:
+
+
 def sortFeatureGroup(feats):
 	return ( feats[0].seqid, feats[0].start, feats[0].strand )
 
+def sortWithinGroup():
+	return 1
+	
 print('Writing final GTF/GFFs')
 geneNameMismatch = []
 with open(mergedGtfOut, 'w') as gtfOut, open(mergedGffOut, 'w') as gffOut:
@@ -406,7 +412,7 @@ with open(mergedGtfOut, 'w') as gtfOut, open(mergedGffOut, 'w') as gffOut:
 			if 'ncbi_genename' in c.attributes.keys() and 'gene_name' not in c.attributes.keys():
 				c.attributes['gene_name'] = c.attributes['ncbi_geneid']
 				geneNameMismatch.append([c.attributes['gene_id'][0], 'MISSING', c.attributes['ncbi_genename'][0]])
-				
+			
 			gtfOut.write(str(c) + '\n')
 			i += 1
 			if i % 10000 == 0:
@@ -423,6 +429,18 @@ with open(mergedGtfOut, 'w') as gtfOut, open(mergedGffOut, 'w') as gffOut:
 				'trailing semicolon': False
 			}
 			
+			#Specifically for GFF, create ID and Parent:
+			if 'transcript' == c.featuretype:
+				if 'transcript_id' not in c.attributes.keys() or c.attributes['transcript_id'] == '':
+					print('Transcript feature lacks transcript_id: ' + str(c))
+				else
+					c.attributes['ID'] = c.attributes['transcript_id']
+			elif 'gene' != c.featuretype:
+				if 'transcript_id' not in c.attributes.keys() or c.attributes['transcript_id'] == '':
+					print('Feature lacks transcript_id: ' + str(c))
+				else
+					c.attributes['Parent'] = c.attributes['transcript_id']
+
 			gffOut.write(str(c) + '\n')
 
 with open(outDir + 'GeneNameMismatch.txt', 'w') as fout:
