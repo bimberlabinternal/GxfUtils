@@ -1,7 +1,9 @@
 import gffutils
+from gffutils import Feature
 import sys
 import os
 import csv
+import copy
 
 ncbi_gtf=sys.argv[1]
 ensembl_gtf=sys.argv[2]
@@ -79,6 +81,14 @@ rowCounter = {
 
 ncbiGeneIdToGeneName = {}
 
+def getSortPriority(d):
+	if d.featuretype == 'gene':
+		return "1"
+	elif d.featuretype == 'transcript' or d.featuretype == 'mRNA':
+		return "2"
+	else:
+		return "3"
+		
 def transformNCBI(d):
 	# Unclear why this happens, but the parser picks up an emtpy attribute some of the time:
 	if '' in d.attributes.keys():
@@ -87,6 +97,7 @@ def transformNCBI(d):
 	#Store this for sorting later.
 	rowCounter['ncbi'] = rowCounter['ncbi'] + 1
 	d.attributes['sort_order'] = str(rowCounter['ncbi'])
+	d.attributes['sort_priority'] = getSortPriority(d)
 
 	#More explicitly store this ID, since it is used heavily within the GTF
 	ncbiId = "-1"
@@ -139,6 +150,7 @@ def transformEns(d):
 	#Store this for sorting later.
 	rowCounter['ens'] = rowCounter['ens'] + 1
 	d.attributes['sort_order'] = str(rowCounter['ens'])
+	d.attributes['sort_priority'] = getSortPriority(d)
 
 	#Only both cross-annotating the parent records:
 	if d.featuretype == 'gene' or d.featuretype == 'transcript':
@@ -232,8 +244,8 @@ print('Summary:')
 for key in results.keys():
 	print(key + ': ' + str(len(results[key])))
 
-def sortByOrder(record):
-	return int(record.attributes['sort_order'][0])
+def sortFeatureGroup(record):
+	return ( int(record.attributes['sort_order'][0]), int(record.attributes['sort_priority'][0]) )
 	
 #Iterate existing Ensembl genes.  If a gene is mapped to NCBI, iterate transcripts on both sides and merge.
 print('Comparing/merging transcripts')
@@ -280,7 +292,7 @@ with open(outDir + 'NCBITranscriptsMergedToEnsemblGenes.txt', 'w') as mergeOut:
 			name = parent.attributes['ncbi_geneid'][0]
 			cognate = ncbi[name]
 			cognateChildren = ncbi.children(name)
-			cognateChildren = sorted(cognateChildren, key = sortByOrder)
+			cognateChildren = sorted(cognateChildren, key = sortFeatureGroup)
 			
 			#Iterate the transcripts, append any with 
 			childTranscripts = {}
@@ -348,7 +360,7 @@ print('Adding ' + str(len(results['TotalNCBINotMappedToEns'])) + ' new genes tha
 toAdd = []
 for geneId in results['TotalNCBINotMappedToEns']:
 	children = ncbi.children(ncbi[geneId])
-	children = sorted(children, key = sortByOrder)
+	children = sorted(children, key = sortFeatureGroup)
 	for c in children:
 		toAdd.append(c)
 
@@ -368,17 +380,13 @@ ensdb.update(toAdd,
 	make_backup=False
 )
 
-#NOTE: need to add missing features of type mRNA:
-
-
-def sortFeatureGroup(feats):
+def sortFeatureGroupByPosition(feats):	
 	return ( feats[0].seqid, feats[0].start, feats[0].strand )
-
-def sortWithinGroup():
-	return 1
 	
 print('Writing final GTF/GFFs')
 geneNameMismatch = []
+transcriptFeaturesAdded = []
+transcriptsLackingId = []
 with open(mergedGtfOut, 'w') as gtfOut, open(mergedGffOut, 'w') as gffOut:
 	gtfOut.write('##gtf-version 2\n')
 	gtfOut.write('#Ensembl Input: ' + ensembl_gtf + '\n')
@@ -389,14 +397,53 @@ with open(mergedGtfOut, 'w') as gtfOut, open(mergedGffOut, 'w') as gffOut:
 	gffOut.write('#NCBI Input: ' + ncbi_gtf + '\n')
 
 	i = 0
-	for feats in sorted(ensdb.iter_by_parent_childs(featuretype='gene', order_by = ( 'seqid', 'start', 'strand')), key = sortFeatureGroup):
+	for feats in sorted(ensdb.iter_by_parent_childs(featuretype='gene', order_by = ( 'seqid', 'start', 'strand')), key = sortFeatureGroupByPosition):
 		parent = feats[0]
 		children = feats[1:]
 
-		children = sorted(children, key = sortByOrder)
-
+		# A GFF file will require a parent 'transcript' feature for each. Prepare this here:
+		transcriptFeaturesFound = {}
+		for f in children:
+			if 'transcript_id' in f.attributes.keys() and f.attributes['transcript_id'][0] not in transcriptFeaturesFound.keys():
+				transcriptFeaturesFound[f.attributes['transcript_id'][0]] = False
+			if f.featuretype == 'transcript':
+				transcriptFeaturesFound[f.attributes['transcript_id'][0]] = True
+		
+		for transcriptName in transcriptFeaturesFound.keys():
+			if transcriptFeaturesFound[transcriptName] == False:
+				minStart = 0
+				maxEnd = 0
+				for f in children:
+					if 'transcript_id' in f.attributes.keys() and f.attributes['transcript_id'][0] == transcriptName:
+						if minStart == 0 or minStart > f.start:
+							minStart = f.start
+							
+						if maxEnd < f.end:
+							maxEnd = f.end
+				
+				props = {}
+				props['seqid'] = parent.seqid
+				props['start'] = minStart
+				props['end'] = maxEnd
+				props['strand'] = parent.strand
+				props['source'] = parent.source
+				props['featuretype'] = 'transcript'				
+				props['attributes'] = copy.deepcopy(parent.attributes)
+				feat = Feature(dialect = parent.dialect, **props)
+				
+				feat.attributes['sort_priority'] = "2"					
+				feat.attributes['transcript_id'] = transcriptName					
+				feat.attributes['new_transcript'] = "Y"								
+									
+				children.append(feat)
+				transcriptFeaturesAdded.append(feat)
+				
+		children = sorted(children, key = sortFeatureGroup)
+				
 		for c in children:
 			del c.attributes['sort_order']
+			del c.attributes['sort_priority']
+			
 			if 'overlapping_gene_id' in c.attributes.keys():
 				del c.attributes['overlapping_gene_id']
 				
@@ -432,21 +479,35 @@ with open(mergedGtfOut, 'w') as gtfOut, open(mergedGffOut, 'w') as gffOut:
 			#Specifically for GFF, create ID and Parent:
 			if 'transcript' == c.featuretype:
 				if 'transcript_id' not in c.attributes.keys() or c.attributes['transcript_id'] == '':
-					print('Transcript feature lacks transcript_id: ' + str(c))
-				else
+					transcriptsLackingId.append(c)
+				else:
 					c.attributes['ID'] = c.attributes['transcript_id']
 			elif 'gene' != c.featuretype:
-				if 'transcript_id' not in c.attributes.keys() or c.attributes['transcript_id'] == '':
-					print('Feature lacks transcript_id: ' + str(c))
-				else
+				if 'transcript_id' not in c.attributes.keys() or c.attributes['transcript_id'] == '':					
+					transcriptsLackingId.append(c)
+				else:
 					c.attributes['Parent'] = c.attributes['transcript_id']
 
 			gffOut.write(str(c) + '\n')
 
-with open(outDir + 'GeneNameMismatch.txt', 'w') as fout:
-	fout.write('Ensembl_GeneName' + '\t' + 'NCBI_GeneName' + '\n')
-	for l in geneNameMismatch:
-		fout.write('\t'.join(l) + '\n')
+print('Transcript features added: ' + str(len(transcriptFeaturesAdded)))
+results['TranscriptFeaturesAdded'] = len(transcriptFeaturesAdded)
+
+with open(outDir + 'TranscriptsAdded.gtf', 'w') as fout:	
+	for f in transcriptFeaturesAdded:
+		fout.write(str(f) + '\n')
+
+results['TranscriptsLackingId'] = len(transcriptsLackingId)
+if len(transcriptsLackingId) > 0:
+	with open(outDir + 'TranscriptsLackingTranscriptId.gtf', 'w') as transcriptOut:
+		for c in transcriptsLackingId:
+			transcriptOut.write(str(c) + '\n')
+	
+if len(geneNameMismatch) > 0:
+	with open(outDir + 'GeneNameMismatch.txt', 'w') as fout:
+		fout.write('Ensembl_GeneName' + '\t' + 'NCBI_GeneName' + '\n')
+		for l in geneNameMismatch:
+			fout.write('\t'.join(l) + '\n')
 
 with open(outDir + 'Summary.txt', 'w') as output:
 	for key in results.keys():
