@@ -254,6 +254,9 @@ transcriptNamesToAdd = set()
 transcriptsMappingUsingNcbi = 0
 transcriptWithIdenticalExons = 0
 
+def sortByStart(feat):
+	return ( feat.start, feat.end)
+
 i = 0
 with open(outDir + 'NCBITranscriptsMergedToEnsemblGenes.txt', 'w') as mergeOut:
 	mergeOut.write('\t'.join(['EnsGeneId', 'EnsGeneName', 'NCBI_GeneId', 'TotalEnsTranscripts', 'TotalNCBITranscript', 'TotalMerged', 'MergedNames']) + '\n')
@@ -285,7 +288,7 @@ with open(outDir + 'NCBITranscriptsMergedToEnsemblGenes.txt', 'w') as mergeOut:
 
 		parentExonPatterns = {}
 		for key in transcripts.keys():
-			parentExonPatterns[';'.join(transcripts[key])] = key
+			parentExonPatterns[';'.join(sorted(transcripts[key]))] = key
 
 		#If we have a cognate NCBI record, retrieve it and compare exons/CDS:
 		if 'ncbi_geneid' in parent.attributes.keys():
@@ -317,7 +320,7 @@ with open(outDir + 'NCBITranscriptsMergedToEnsemblGenes.txt', 'w') as mergeOut:
 			
 			addedForGene = set()
 			for tName in childTranscripts.keys():
-				joined = ';'.join(childTranscripts[tName])
+				joined = ';'.join(sorted(childTranscripts[tName]))
 				if joined not in parentExonPatterns.keys():
 					transcriptNamesToAdd.add(tName)
 					addedForGene.add(tName)
@@ -545,14 +548,30 @@ with open(mergedGtfOut, 'w') as gtfOut, open(mergedGffOut, 'w') as gffOut:
 					
 					c.attributes['ID'] = 'transcript:' + featId
 					c.attributes['Parent'] = 'gene:' + c.attributes['gene_id'][0]
+					
+					if 'transcript_name' in c.attributes.keys():
+						c.attributes['Name'] = c.attributes['transcript_name'][0]
+
 			elif 'gene' == c.featuretype:
 				c.attributes['ID'] = 'gene:' + c.attributes['gene_id'][0]
+				if 'gene_name' in c.attributes.keys():
+					c.attributes['Name'] = c.attributes['gene_name'][0]
+
 			elif 'gene' != c.featuretype:
-				if 'transcript_id' not in c.attributes.keys() or c.attributes['transcript_id'] == '':					
+				if 'transcript_id' not in c.attributes.keys() or c.attributes['transcript_id'] == '':
 					transcriptsLackingId.append(c)
 				else:
 					c.attributes['Parent'] = 'transcript:' + c.attributes['transcript_id'][0]
 
+			#Normalize case for jbrowse:
+			if 'three_prime_utr' != c.featuretype:
+				c.featuretype = 'three_prime_UTR'
+
+			if 'five_prime_utr' != c.featuretype:
+				c.featuretype = 'five_prime_UTR'
+
+			c.source = 'merged'
+			
 			gffOut.write(str(c) + '\n')
 
 print('Transcript features added: ' + str(len(transcriptFeaturesAdded)))
