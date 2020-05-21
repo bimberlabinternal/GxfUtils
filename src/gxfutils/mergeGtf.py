@@ -352,6 +352,81 @@ ensdb.update(transcriptsToAdd,
 	make_backup=False
 )
 
+transcriptFeaturesAdded = []
+uniqueTranscriptIds = set()
+transcriptNameUpdates = set()
+
+def ensureUniqueTranscriptName(transcriptName, uniqueTranscriptIds):
+	if transcriptName not in uniqueTranscriptIds:
+		return transcriptName
+	
+	transcriptNameOrig = transcriptName
+	i = 0
+	while transcriptName in uniqueTranscriptIds:
+		i += 1
+		transcriptName = transcriptNameOrig + '.' + str(i)
+		
+	return transcriptName
+
+def possiblyAddTranscriptRecord(parent, children):
+	transcriptFeaturesFound = {}
+	for f in children:
+		if 'transcript_id' in f.attributes.keys() and f.attributes['transcript_id'][0] not in transcriptFeaturesFound.keys():
+			transcriptFeaturesFound[f.attributes['transcript_id'][0]] = False
+		if f.featuretype == 'transcript':
+			transcriptFeaturesFound[f.attributes['transcript_id'][0]] = True
+			uniqueTranscriptIds.add(f.attributes['transcript_id'][0])
+	
+	transcriptUpdatesNeeded = {}
+	for transcriptName in transcriptFeaturesFound.keys():
+		if transcriptFeaturesFound[transcriptName] == False:
+			minStart = 0
+			maxEnd = 0
+			for f in children:
+				if 'transcript_id' in f.attributes.keys() and f.attributes['transcript_id'][0] == transcriptName:
+					if minStart == 0 or minStart > f.start:
+						minStart = f.start
+						
+					if maxEnd < f.end:
+						maxEnd = f.end
+			
+			props = {}
+			props['seqid'] = parent.seqid
+			props['start'] = minStart
+			props['end'] = maxEnd
+			props['strand'] = parent.strand
+			props['source'] = parent.source
+			props['featuretype'] = 'transcript'
+			props['attributes'] = copy.deepcopy(parent.attributes)
+			feat = Feature(dialect = parent.dialect, **props)
+			
+			feat.attributes['sort_priority'] = "2"
+			transcriptNameToUse = transcriptName
+			if 'gene_id' in feat.attributes.keys() and transcriptName == feat.attributes['gene_id'][0]:
+				transcriptNameToUse = 'transcript-' + transcriptName
+
+			transcriptNameToUse = ensureUniqueTranscriptName(transcriptNameToUse, uniqueTranscriptIds)
+			if transcriptNameToUse != transcriptName:
+				transcriptNameUpdates.add( (feat.attributes['gene_id'][0], transcriptName, transcriptNameToUse) )
+				transcriptUpdatesNeeded[transcriptName] = transcriptNameToUse
+				
+			uniqueTranscriptIds.add(transcriptNameToUse)
+			
+			feat.attributes['transcript_id'] = transcriptNameToUse
+			feat.attributes['new_transcript'] = "Y"	
+			children.append(feat)
+			transcriptFeaturesAdded.append(feat)
+	
+	if len(transcriptUpdatesNeeded) > 0:
+		for c in children:
+			if 'transcript_id' in c.attributes.keys() and c.attributes['transcript_id'][0] in transcriptUpdatesNeeded.keys():			
+				c.attributes['transcript_id'] = transcriptUpdatesNeeded[c.attributes['transcript_id'][0]]
+	
+	children = sorted(children, key = sortFeatureGroup)	
+	
+	return children
+
+	
 print('Total NCBI transcripts added to an existing Ensembl gene: '  + str(len(transcriptNamesToAdd)))
 results['NCBITranscriptsAddedToEnsemblGene'] = len(transcriptNamesToAdd)
 
@@ -361,6 +436,19 @@ toAdd = []
 for geneId in results['TotalNCBINotMappedToEns']:
 	children = ncbi.children(ncbi[geneId])
 	children = sorted(children, key = sortFeatureGroup)
+
+	parent = None
+	for c in children:
+		if c.featuretype == 'gene':
+			parent = c
+			break
+			
+	if parent == None:
+		raise 'No gene record found for group: ' + geneId
+
+	# Create a transcript/mRNA record if necessary:
+	children = possiblyAddTranscriptRecord(parent, children)
+	
 	for c in children:
 		toAdd.append(c)
 
@@ -385,8 +473,9 @@ def sortFeatureGroupByPosition(feats):
 	
 print('Writing final GTF/GFFs')
 geneNameMismatch = []
-transcriptFeaturesAdded = []
 transcriptsLackingId = []
+uniqueIds = set()
+duplicateIds = []
 with open(mergedGtfOut, 'w') as gtfOut, open(mergedGffOut, 'w') as gffOut:
 	gtfOut.write('##gtf-version 2\n')
 	gtfOut.write('#Ensembl Input: ' + ensembl_gtf + '\n')
@@ -402,42 +491,7 @@ with open(mergedGtfOut, 'w') as gtfOut, open(mergedGffOut, 'w') as gffOut:
 		children = feats[1:]
 
 		# A GFF file will require a parent 'transcript' feature for each. Prepare this here:
-		transcriptFeaturesFound = {}
-		for f in children:
-			if 'transcript_id' in f.attributes.keys() and f.attributes['transcript_id'][0] not in transcriptFeaturesFound.keys():
-				transcriptFeaturesFound[f.attributes['transcript_id'][0]] = False
-			if f.featuretype == 'transcript':
-				transcriptFeaturesFound[f.attributes['transcript_id'][0]] = True
-		
-		for transcriptName in transcriptFeaturesFound.keys():
-			if transcriptFeaturesFound[transcriptName] == False:
-				minStart = 0
-				maxEnd = 0
-				for f in children:
-					if 'transcript_id' in f.attributes.keys() and f.attributes['transcript_id'][0] == transcriptName:
-						if minStart == 0 or minStart > f.start:
-							minStart = f.start
-							
-						if maxEnd < f.end:
-							maxEnd = f.end
-				
-				props = {}
-				props['seqid'] = parent.seqid
-				props['start'] = minStart
-				props['end'] = maxEnd
-				props['strand'] = parent.strand
-				props['source'] = parent.source
-				props['featuretype'] = 'transcript'				
-				props['attributes'] = copy.deepcopy(parent.attributes)
-				feat = Feature(dialect = parent.dialect, **props)
-				
-				feat.attributes['sort_priority'] = "2"					
-				feat.attributes['transcript_id'] = transcriptName					
-				feat.attributes['new_transcript'] = "Y"								
-									
-				children.append(feat)
-				transcriptFeaturesAdded.append(feat)
-				
+		children = possiblyAddTranscriptRecord(parent, children)
 		children = sorted(children, key = sortFeatureGroup)
 				
 		for c in children:
@@ -478,31 +532,55 @@ with open(mergedGtfOut, 'w') as gtfOut, open(mergedGffOut, 'w') as gffOut:
 			
 			#Specifically for GFF, create ID and Parent:
 			if 'transcript' == c.featuretype:
-				if 'transcript_id' not in c.attributes.keys() or c.attributes['transcript_id'] == '':
+				# GFFs also seem to expect mRNA as feature type:
+				c.featuretype = 'mRNA'
+				if 'transcript_id' not in c.attributes.keys() or c.attributes['transcript_id'][0] == '':
 					transcriptsLackingId.append(c)
 				else:
-					c.attributes['ID'] = c.attributes['transcript_id']
+					featId = c.attributes['transcript_id'][0]
+					if featId in uniqueIds:
+						duplicateIds.append(c)
+						
+					uniqueIds.add(featId)
+					
+					c.attributes['ID'] = 'transcript:' + featId
+					c.attributes['Parent'] = 'gene:' + c.attributes['gene_id'][0]
+			elif 'gene' == c.featuretype:
+				c.attributes['ID'] = 'gene:' + c.attributes['gene_id'][0]
 			elif 'gene' != c.featuretype:
 				if 'transcript_id' not in c.attributes.keys() or c.attributes['transcript_id'] == '':					
 					transcriptsLackingId.append(c)
 				else:
-					c.attributes['Parent'] = c.attributes['transcript_id']
+					c.attributes['Parent'] = 'transcript:' + c.attributes['transcript_id'][0]
 
 			gffOut.write(str(c) + '\n')
 
 print('Transcript features added: ' + str(len(transcriptFeaturesAdded)))
+print('Transcript IDs update to make unique: ' + str(len(transcriptNameUpdates)))
 results['TranscriptFeaturesAdded'] = len(transcriptFeaturesAdded)
 
 with open(outDir + 'TranscriptsAdded.gtf', 'w') as fout:	
 	for f in transcriptFeaturesAdded:
 		fout.write(str(f) + '\n')
 
+results['TranscriptNamesUpdates'] = len(transcriptNameUpdates)
+if len(transcriptNameUpdates) > 0:
+	with open(outDir + 'TranscriptNamesUpdates.gtf', 'w') as fout:
+		fout.write('GeneId\tOrigTranscriptName\tUniquifiedTranscriptName\n')
+		for c in transcriptNameUpdates:
+			fout.write(c[0] + '\t' + c[1] + '\t' + c[2] + '\n')
+			
 results['TranscriptsLackingId'] = len(transcriptsLackingId)
 if len(transcriptsLackingId) > 0:
 	with open(outDir + 'TranscriptsLackingTranscriptId.gtf', 'w') as transcriptOut:
 		for c in transcriptsLackingId:
 			transcriptOut.write(str(c) + '\n')
-	
+
+if len(duplicateIds) > 0:
+	with open(outDir + 'DuplicateIds.gtf', 'w') as fout:
+		for c in duplicateIds:
+			fout.write(str(c) + '\n')
+			
 if len(geneNameMismatch) > 0:
 	with open(outDir + 'GeneNameMismatch.txt', 'w') as fout:
 		fout.write('Ensembl_GeneName' + '\t' + 'NCBI_GeneName' + '\n')
