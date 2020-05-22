@@ -127,6 +127,9 @@ def transformNCBI(d):
 			d.attributes['ensembl_geneid'] = ncbiGeneIdToEnsemblIdMap[ncbiId]
 
 		results['TotalNCBIGenes'].add(d['gene_id'][0])
+		#if 'ensembl_geneid' in d.attributes.keys() and 'overlapping_gene_id' not in d.attributes.keys():
+		#	print('NCBI match, but no overlap by bedtools: ' + d['gene_id'][0])
+			
 		if 'ensembl_geneid' in d.attributes.keys():
 			results['TotalNCBIMappedToEns'].add(d['gene_id'][0])
 		elif 'overlapping_gene_id' in d.attributes.keys():
@@ -165,6 +168,9 @@ def transformEns(d):
 			d.attributes['overlapping_gene_dbid'] = ensToNcbiOverlapByGeneMapToId[d['gene_id'][0]]
 			
 		results['TotalEnsGenes'].add(d['gene_id'][0])
+		#if 'ncbi_gene_dbid' in d.attributes.keys() and 'overlapping_gene_id' not in d.attributes.keys():
+		#	print('NCBI match, but no overlap by bedtools: ' + d['gene_id'][0])
+		
 		if 'ncbi_gene_dbid' in d.attributes.keys():
 			results['TotalEnsMappedToNCBI'].add(d['gene_id'][0])
 		elif 'overlapping_gene_id' in d.attributes.keys():
@@ -213,14 +219,6 @@ ensdb = gffutils.create_db(ensembl_gtf, (":memory:" if gtfInMemory else ensDbFil
 	disable_infer_genes=True
 )
 print('Done')
-
-#with open('ncbi.annotated.gtf', 'w') as fout:
-#	for f in ncbi.all_features():
-#		fout.write(str(f) + '\n')
-
-#with open('ensembl.annotated.gtf', 'w') as fout:
-#	for f in ensdb.all_features():
-#		fout.write(str(f) + '\n')
 
 with open(outDir + 'GenesWithOverlapNotJoined.txt', 'w') as out: 
 	out.write('NCBI_GeneId\tEns_GeneId\tEns_GeneName\n')
@@ -284,7 +282,7 @@ with open(outDir + 'NCBITranscriptsMergedToEnsemblGenes.txt', 'w') as mergeOut:
 				if tName not in transcripts.keys():
 					transcripts[tName] = []
 					
-				transcripts[tName].append(str(record.start) + '-' + str(record.end))
+				transcripts[tName].append(record.seqid + ':' + str(record.start) + '-' + str(record.end))
 
 		parentExonPatterns = {}
 		for key in transcripts.keys():
@@ -292,8 +290,18 @@ with open(outDir + 'NCBITranscriptsMergedToEnsemblGenes.txt', 'w') as mergeOut:
 
 		#If we have a cognate NCBI record, retrieve it and compare exons/CDS:
 		if 'ncbi_geneid' in parent.attributes.keys():
-			name = parent.attributes['ncbi_geneid'][0]
+			name = parent.attributes['ncbi_geneid'][0]			
+			if 'overlapping_gene_id' not in parent.attributes.keys():
+				print('Ens mapping but no overlap: ' + name)
+			elif 'overlapping_gene_id' in parent.attributes.keys() and name != parent.attributes['overlapping_gene_id'][0]:
+				print('Ens mapping but no overlap: ' + name)
+
 			cognate = ncbi[name]
+			
+			# These are on different chromosomes, but were mapped together. Dont merge transcripts.
+			if cognate.seqid != parent.seqid:
+				continue
+				
 			cognateChildren = ncbi.children(name)
 			cognateChildren = sorted(cognateChildren, key = sortFeatureGroup)
 			
@@ -301,7 +309,7 @@ with open(outDir + 'NCBITranscriptsMergedToEnsemblGenes.txt', 'w') as mergeOut:
 			childTranscripts = {}
 			childTranscriptFeatures = {}
 			for record in cognateChildren:
-				if record.featuretype == 'exon':
+				if record.featuretype.lower() not in ['gene']:
 					#indicates this matches
 					if 'ensembl_transcript_id' in record.attributes.keys() and record.attributes['ensembl_transcript_id'][0] in parentTranscriptIds:
 						transcriptsMappingUsingNcbi += 1
@@ -311,13 +319,16 @@ with open(outDir + 'NCBITranscriptsMergedToEnsemblGenes.txt', 'w') as mergeOut:
 						raise 'Record lacks transcript_id: ' + str(record)
 						
 					tName = record.attributes['transcript_id'][0]
-					if tName not in childTranscripts.keys():
-						childTranscripts[tName] = []
+					if tName not in childTranscriptFeatures.keys():
 						childTranscriptFeatures[tName] = []
 
-					childTranscripts[tName].append(str(record.start) + '-' + str(record.end))
 					childTranscriptFeatures[tName].append(record)
-			
+
+					if record.featuretype == 'exon':
+						if tName not in childTranscripts.keys():
+							childTranscripts[tName] = []
+						childTranscripts[tName].append(record.seqid + ':' + str(record.start) + '-' + str(record.end))
+
 			addedForGene = set()
 			for tName in childTranscripts.keys():
 				joined = ';'.join(sorted(childTranscripts[tName]))
@@ -551,11 +562,15 @@ with open(mergedGtfOut, 'w') as gtfOut, open(mergedGffOut, 'w') as gffOut:
 					
 					if 'transcript_name' in c.attributes.keys():
 						c.attributes['Name'] = c.attributes['transcript_name'][0]
+					else:
+						c.attributes['Name'] = c.attributes['transcript_id'][0]
 
 			elif 'gene' == c.featuretype:
 				c.attributes['ID'] = 'gene:' + c.attributes['gene_id'][0]
 				if 'gene_name' in c.attributes.keys():
 					c.attributes['Name'] = c.attributes['gene_name'][0]
+				elif 'gene_id' in c.attributes.keys():
+					c.attributes['Name'] = c.attributes['gene_id'][0]
 
 			elif 'gene' != c.featuretype:
 				if 'transcript_id' not in c.attributes.keys() or c.attributes['transcript_id'] == '':
@@ -564,10 +579,10 @@ with open(mergedGtfOut, 'w') as gtfOut, open(mergedGffOut, 'w') as gffOut:
 					c.attributes['Parent'] = 'transcript:' + c.attributes['transcript_id'][0]
 
 			#Normalize case for jbrowse:
-			if 'three_prime_utr' != c.featuretype:
+			if 'three_prime_utr' == c.featuretype:
 				c.featuretype = 'three_prime_UTR'
 
-			if 'five_prime_utr' != c.featuretype:
+			if 'five_prime_utr' == c.featuretype:
 				c.featuretype = 'five_prime_UTR'
 
 			c.source = 'merged'
@@ -584,7 +599,7 @@ with open(outDir + 'TranscriptsAdded.gtf', 'w') as fout:
 
 results['TranscriptNamesUpdates'] = len(transcriptNameUpdates)
 if len(transcriptNameUpdates) > 0:
-	with open(outDir + 'TranscriptNamesUpdates.gtf', 'w') as fout:
+	with open(outDir + 'TranscriptNamesUpdated.gtf', 'w') as fout:
 		fout.write('GeneId\tOrigTranscriptName\tUniquifiedTranscriptName\n')
 		for c in transcriptNameUpdates:
 			fout.write(c[0] + '\t' + c[1] + '\t' + c[2] + '\n')
