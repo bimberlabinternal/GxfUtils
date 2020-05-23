@@ -248,6 +248,7 @@ def sortFeatureGroup(record):
 #Iterate existing Ensembl genes.  If a gene is mapped to NCBI, iterate transcripts on both sides and merge.
 print('Comparing/merging transcripts')
 transcriptsToAdd = []
+transcriptOverlapDiscrepancies = []
 transcriptNamesToAdd = set()
 transcriptsMappingUsingNcbi = 0
 transcriptWithIdenticalExons = 0
@@ -256,8 +257,10 @@ def sortByStart(feat):
 	return ( feat.start, feat.end)
 
 i = 0
+maxStartDiff = 0
+totalStartDiff = 0
 with open(outDir + 'NCBITranscriptsMergedToEnsemblGenes.txt', 'w') as mergeOut:
-	mergeOut.write('\t'.join(['EnsGeneId', 'EnsGeneName', 'NCBI_GeneId', 'TotalEnsTranscripts', 'TotalNCBITranscript', 'TotalMerged', 'MergedNames']) + '\n')
+	mergeOut.write('\t'.join(['EnsGeneId', 'EnsGeneName', 'NCBI_GeneId', 'TotalEnsTranscripts', 'TotalNCBITranscript', 'TotalMerged', 'MergedNames', 'TSS_Differences']) + '\n')
 		
 	for records in ensdb.iter_by_parent_childs(featuretype='gene'):
 		i += 1
@@ -273,15 +276,15 @@ with open(outDir + 'NCBITranscriptsMergedToEnsemblGenes.txt', 'w') as mergeOut:
 		for record in children:
 			if 'transcript_id' in record.attributes.keys():
 				parentTranscriptIds.add(record.attributes['transcript_id'][0])
-				
+
 			if record.featuretype == 'exon':
 				if 'transcript_id' not in record.attributes.keys():
 					raise 'Record lacks transcript_id: ' + str(record)
-				
+
 				tName = record.attributes['transcript_id'][0]
 				if tName not in transcripts.keys():
 					transcripts[tName] = []
-					
+
 				transcripts[tName].append(record.seqid + ':' + str(record.start) + '-' + str(record.end))
 
 		parentExonPatterns = {}
@@ -290,17 +293,19 @@ with open(outDir + 'NCBITranscriptsMergedToEnsemblGenes.txt', 'w') as mergeOut:
 
 		#If we have a cognate NCBI record, retrieve it and compare exons/CDS:
 		if 'ncbi_geneid' in parent.attributes.keys():
-			name = parent.attributes['ncbi_geneid'][0]			
-			if 'overlapping_gene_id' not in parent.attributes.keys():
-				print('Ens mapping but no overlap: ' + name)
-			elif 'overlapping_gene_id' in parent.attributes.keys() and name != parent.attributes['overlapping_gene_id'][0]:
-				print('Ens mapping but no overlap: ' + name)
-
+			name = parent.attributes['ncbi_geneid'][0]
+			parentName = parent.attributes['gene_id'][0]
 			cognate = ncbi[name]
 			
 			# These are on different chromosomes, but were mapped together. Dont merge transcripts.
 			if cognate.seqid != parent.seqid:
+				transcriptOverlapDiscrepancies.append([parentName, name, 'Contig Mismatch', 'N'])
 				continue
+
+			if 'overlapping_gene_id' not in parent.attributes.keys():
+				transcriptOverlapDiscrepancies.append([parentName, name, 'Missing', 'Y'])
+			elif 'overlapping_gene_id' in parent.attributes.keys() and name != parent.attributes['overlapping_gene_id'][0]:
+				transcriptOverlapDiscrepancies.append([parentName, name, parent.attributes['overlapping_gene_id'][0], 'Y'])
 				
 			cognateChildren = ncbi.children(name)
 			cognateChildren = sorted(cognateChildren, key = sortFeatureGroup)
@@ -330,6 +335,7 @@ with open(outDir + 'NCBITranscriptsMergedToEnsemblGenes.txt', 'w') as mergeOut:
 						childTranscripts[tName].append(record.seqid + ':' + str(record.start) + '-' + str(record.end))
 
 			addedForGene = set()
+			startDiffs = set()
 			for tName in childTranscripts.keys():
 				joined = ';'.join(sorted(childTranscripts[tName]))
 				if joined not in parentExonPatterns.keys():
@@ -338,10 +344,30 @@ with open(outDir + 'NCBITranscriptsMergedToEnsemblGenes.txt', 'w') as mergeOut:
 					
 					#Actually add:
 					feats = childTranscriptFeatures[tName]
+					minStartDiffForTranscript = -1
 					for f in feats:
+						if f.strand != parent.strand:
+							print('Strands differ, will not add: ' + parentName + ' / ' + tName)
+							continue
+
+						if f.strand == '-':
+							startDiff = abs(parent.end - f.end)
+							if minStartDiffForTranscript == -1 or startDiff < minStartDiffForTranscript:
+								minStartDiffForTranscript = startDiff
+						else:
+							startDiff = abs(parent.start - f.start)
+							if minStartDiffForTranscript == -1 or startDiff < minStartDiffForTranscript:
+								minStartDiffForTranscript = startDiff
+
+						if minStartDiffForTranscript > maxStartDiff:
+							maxStartDiff = minStartDiffForTranscript
+							
+						totalStartDiff += minStartDiffForTranscript
+
 						f.attributes['gene_id'] = parent.attributes['gene_id']
 						transcriptsToAdd.append(f)
-					
+						
+					startDiffs.add(str(minStartDiffForTranscript))
 				else:
 					transcriptWithIdenticalExons += 1
 			
@@ -351,10 +377,17 @@ with open(outDir + 'NCBITranscriptsMergedToEnsemblGenes.txt', 'w') as mergeOut:
 			else:
 				parentGeneName = 'MISSING'
 				
-			mergeOut.write('\t'.join([parent.attributes['gene_id'][0], parentGeneName, cognate.attributes['gene_id'][0], str(len(transcripts)), str(len(childTranscripts)), str(len(addedForGene)), ','.join(addedForGene)]) + '\n')
+			mergeOut.write('\t'.join([parent.attributes['gene_id'][0], parentGeneName, cognate.attributes['gene_id'][0], str(len(transcripts)), str(len(childTranscripts)), str(len(addedForGene)), ','.join(addedForGene), ','.join(startDiffs)]) + '\n')
 
 print('Transcripts ignored because of NCBI->Ens mapping: ' + str(transcriptsMappingUsingNcbi))
 print('Transcripts ignored because of itentical exons: ' + str(transcriptWithIdenticalExons))
+print('Max difference between parent gene start and added transcript: ' + str(maxStartDiff))
+print('Avg difference between parent gene start and added transcript: ' + str(totalStartDiff / len(transcriptsToAdd)))
+
+with open('TranscriptOverlapDiscrepancies.txt', 'w') as out:
+	out.write('EnsemblName\tNCBI_Name\tOverlappingGene\tIsAdded\n')
+	for line in transcriptOverlapDiscrepancies:
+		out.write(line[0] + '\t' + line[1] + '\t' + line[2] + '\t' + line[3] + '\n')
 
 ensdb.update(transcriptsToAdd, 
 	id_spec={'transcript': 'transcript_id', 'gene': 'gene_id', 'Name': 'gene_name'}, 
@@ -427,13 +460,13 @@ def possiblyAddTranscriptRecord(parent, children):
 			uniqueTranscriptIds.add(transcriptNameToUse)
 			
 			feat.attributes['transcript_id'] = transcriptNameToUse
-			feat.attributes['new_transcript'] = "Y"	
+			feat.attributes['new_transcript'] = "Y"
 			children.append(feat)
 			transcriptFeaturesAdded.append(feat)
 	
 	if len(transcriptUpdatesNeeded) > 0:
 		for c in children:
-			if 'transcript_id' in c.attributes.keys() and c.attributes['transcript_id'][0] in transcriptUpdatesNeeded.keys():			
+			if 'transcript_id' in c.attributes.keys() and c.attributes['transcript_id'][0] in transcriptUpdatesNeeded.keys():
 				c.attributes['transcript_id'] = transcriptUpdatesNeeded[c.attributes['transcript_id'][0]]
 	
 	children = sorted(children, key = sortFeatureGroup)	
@@ -490,6 +523,7 @@ geneNameMismatch = []
 transcriptsLackingId = []
 uniqueIds = set()
 duplicateIds = []
+geneNameAdded = 0
 with open(mergedGtfOut, 'w') as gtfOut, open(mergedGffOut, 'w') as gffOut:
 	gtfOut.write('##gtf-version 2\n')
 	gtfOut.write('#Ensembl Input: ' + ensembl_gtf + '\n')
@@ -507,7 +541,27 @@ with open(mergedGtfOut, 'w') as gtfOut, open(mergedGffOut, 'w') as gffOut:
 		# A GFF file will require a parent 'transcript' feature for each. Prepare this here:
 		children = possiblyAddTranscriptRecord(parent, children)
 		children = sorted(children, key = sortFeatureGroup)
-				
+
+		# Note: 10x will require consistency in gene_id and gene_name across all the features:
+		uniqueNames = set()
+		for c in children:
+			if 'gene_name' in c.attributes.keys():
+				uniqueNames.add(c.attributes['gene_name'][0])
+			
+		if len(uniqueNames) > 1:
+			print('Multiple gene_names for ID: ' + parent.attributes['gene_id'][0] + ', were: ' + ','.join(uniqueNames))
+			geneNameMismatch.append([parent.attributes['gene_id'][0], ','.join(uniqueNames), 'MultipleGeneNames'])
+			for c in children:
+				newName = parent.attributes['gene_name'][0]
+				for c in children:
+					c.attributes['gene_name'] = newName
+		elif len(uniqueNames) == 1:
+			geneName = list(uniqueNames)[0]
+			for c in children:
+				if 'gene_name' not in c.attributes.keys():
+					geneNameAdded += 1
+					c.attributes['gene_name'] = geneName
+
 		for c in children:
 			del c.attributes['sort_order']
 			del c.attributes['sort_priority']
@@ -591,9 +645,10 @@ with open(mergedGtfOut, 'w') as gtfOut, open(mergedGffOut, 'w') as gffOut:
 
 print('Transcript features added: ' + str(len(transcriptFeaturesAdded)))
 print('Transcript IDs update to make unique: ' + str(len(transcriptNameUpdates)))
+print('Rows where gene_name was updated: ' + str(geneNameAdded))
 results['TranscriptFeaturesAdded'] = len(transcriptFeaturesAdded)
 
-with open(outDir + 'TranscriptsAdded.gtf', 'w') as fout:	
+with open(outDir + 'TranscriptsAdded.gtf', 'w') as fout:
 	for f in transcriptFeaturesAdded:
 		fout.write(str(f) + '\n')
 
